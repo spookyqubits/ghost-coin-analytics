@@ -47,14 +47,22 @@
       <p>Visible time covers Level 2 while the tab is visible. Estimated active time extends to 60 seconds after a game action. Visible idle time begins after that. Hidden time is reported separately.</p>
       <div class="actions">
         <button id="refresh" type="button">Refresh</button>
+        <button id="class-report-load" type="button" aria-expanded="false" aria-controls="class-report">View quantitative report</button>
         <button id="summary-export" type="button">Export class summary</button>
         <button id="event-export" type="button">Export class events</button>
+        <button id="card-export" type="button">Export card plays</button>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Participant</th><th>Completion</th><th>First / last saved</th><th>Visible / active / idle / hidden</th><th>Resolved / abandoned / restarts</th><th>Human / computer moves</th><th>Session state</th><th>Timeline</th></tr></thead>
         <tbody id="sessions"></tbody>
       </table></div>
       <button id="more-sessions" type="button" hidden>Show more sessions</button>
+    </section>
+    <section id="class-report" aria-labelledby="class-report-title" hidden>
+      <h2 id="class-report-title" tabindex="-1">Quantitative class report</h2>
+      <p>Saved Level 2 activity for the selected class. Card counts include choices from unfinished rounds.</p>
+      <div id="class-report-content"></div>
+      <p class="report-note">Use card choices and outcomes to discuss strategy. Ask students to predict and explain a result to check understanding.</p>
     </section>
     <section id="detail" aria-labelledby="detail-title" hidden>
       <h2 id="detail-title"></h2>

@@ -1,5 +1,6 @@
 import { createSupabase } from './supabase.mjs';
-import { csv, duration } from './reports.mjs';
+import { cardPlayColumns, cardPlayRows, csv, duration } from './reports.mjs';
+import { addSessionToReport, createClassReport, renderClassReport } from './class-report.mjs';
 
 const $ = selector => document.querySelector(selector);
 const classes = $('#class-select');
@@ -40,6 +41,13 @@ function hideDetail() {
   $('#detail').hidden = true;
 }
 
+function hideClassReport() {
+  $('#class-report').hidden = true;
+  $('#class-report-content').replaceChildren();
+  $('#class-report-load').textContent = 'View quantitative report';
+  $('#class-report-load').setAttribute('aria-expanded', 'false');
+}
+
 function clearDashboard() {
   classList = [];
   classes.replaceChildren(new Option('Select a class', ''));
@@ -51,6 +59,7 @@ function clearDashboard() {
   $('#new-code').hidden = true;
   $('#logout').hidden = true;
   hideDetail();
+  hideClassReport();
 }
 
 function prepareClassForm(row) {
@@ -96,6 +105,7 @@ async function loadSessions(reset = true) {
     $('#sessions').replaceChildren();
     $('#more-sessions').hidden = true;
     hideDetail();
+    hideClassReport();
   }
   if (!classes.value) return;
   const rows = await client.rpc('gca_sessions', { p_class: classes.value, p_offset: loaded, p_limit: summaryPageSize });
@@ -187,41 +197,77 @@ async function saveClass(rotate = false) {
   show('Class settings saved.');
 }
 
-async function exportClass(includeEvents) {
+async function* sessionEvents(sessionId) {
+  let after = 0;
+  for (;;) {
+    const events = await client.rpc('gca_events', { p_session: sessionId, p_after: after });
+    yield* events;
+    if (events.length < eventPageSize) return;
+    after = events.at(-1).seq;
+  }
+}
+
+async function* classSessions(classId) {
+  for (let offset = 0; ; offset += summaryPageSize) {
+    const sessions = await client.rpc('gca_sessions', { p_class: classId, p_offset: offset, p_limit: summaryPageSize });
+    yield* sessions;
+    if (sessions.length < summaryPageSize) return;
+  }
+}
+
+async function loadClassReport() {
+  const classId = classes.value;
+  if (!classId) return;
+  hideClassReport();
+  show('Loading the quantitative report…');
+  const report = createClassReport();
+  for await (const session of classSessions(classId)) {
+    const roundEvents = [];
+    for await (const event of sessionEvents(session.session_id)) {
+      if (['round_start', 'card_played', 'round_resolved'].includes(event.event_type)) roundEvents.push(event);
+    }
+    addSessionToReport(report, session, roundEvents);
+  }
+  renderClassReport($('#class-report-content'), report);
+  $('#class-report').hidden = false;
+  $('#class-report-load').textContent = 'Refresh quantitative report';
+  $('#class-report-load').setAttribute('aria-expanded', 'true');
+  $('#class-report-title').focus();
+  show('Quantitative report ready.');
+}
+
+async function exportClass(kind) {
   const classId = classes.value;
   const summary = ['participant_id', 'session_id', 'name', 'partner', 'shared', 'session_started', 'first_saved', 'last_saved', 'completed_at', 'rounds_required_at_completion', 'visible_ms', 'estimated_active_ms', 'visible_idle_ms', 'hidden_ms', 'resolved_rounds', 'abandoned_rounds', 'restarts', 'human_moves', 'computer_moves', 'sequences', 'session_state'];
   const detail = ['session_id', 'seq', 'event_id', 'round_id', 'event_type', 'elapsed_ms', 'client_at', 'received_at', 'payload'];
-  const rows = [includeEvents ? detail : summary];
+  const headers = { summary, events: detail, 'card-plays': cardPlayColumns };
+  const rows = [headers[kind]];
   show('Preparing CSV…');
-  for (let offset = 0; ; offset += summaryPageSize) {
-    const sessions = await client.rpc('gca_sessions', { p_class: classId, p_offset: offset, p_limit: summaryPageSize });
-    for (const s of sessions) {
-      if (!includeEvents) {
-        rows.push([
-          s.participant_id, s.session_id, s.student_name, s.partner_name, Boolean(s.partner_name), s.session_started,
-          s.first_recorded, s.last_recorded, s.completed_at, s.completion_rounds,
-          s.timing?.visible_ms, s.timing?.active_ms, s.timing?.idle_ms, s.timing?.hidden_ms,
-          s.resolved_rounds, s.abandoned_rounds, s.restarts, s.human_moves, s.computer_moves,
-          JSON.stringify(s.sequences), sessionState(s),
-        ]);
-        continue;
-      }
-      let after = 0;
-      for (;;) {
-        const events = await client.rpc('gca_events', { p_session: s.session_id, p_after: after });
-        for (const e of events) {
-          rows.push([s.session_id, e.seq, e.event_id, e.round_id, e.event_type, e.elapsed_ms, e.client_at, e.received_at, JSON.stringify(e.payload)]);
-        }
-        if (events.length < eventPageSize) break;
-        after = events.at(-1).seq;
+  for await (const s of classSessions(classId)) {
+    if (kind === 'summary') {
+      rows.push([
+        s.participant_id, s.session_id, s.student_name, s.partner_name, Boolean(s.partner_name), s.session_started,
+        s.first_recorded, s.last_recorded, s.completed_at, s.completion_rounds,
+        s.timing?.visible_ms, s.timing?.active_ms, s.timing?.idle_ms, s.timing?.hidden_ms,
+        s.resolved_rounds, s.abandoned_rounds, s.restarts, s.human_moves, s.computer_moves,
+        JSON.stringify(s.sequences), sessionState(s),
+      ]);
+      continue;
+    }
+    const roundEvents = [];
+    for await (const e of sessionEvents(s.session_id)) {
+      if (kind === 'events') {
+        rows.push([s.session_id, e.seq, e.event_id, e.round_id, e.event_type, e.elapsed_ms, e.client_at, e.received_at, JSON.stringify(e.payload)]);
+      } else if (e.event_type === 'card_played' || e.event_type === 'round_resolved' || e.event_type === 'round_restart') {
+        roundEvents.push(e);
       }
     }
-    if (sessions.length < summaryPageSize) break;
+    if (kind === 'card-plays') rows.push(...cardPlayRows(s, roundEvents));
   }
   const url = URL.createObjectURL(new Blob([csv(rows)], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `ghost-coin-${includeEvents ? 'events' : 'summary'}.csv`;
+  link.download = `ghost-coin-${kind}.csv`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   show('CSV ready.');
@@ -287,6 +333,7 @@ $('#create-class').addEventListener('click', () => {
   $('#reports').hidden = true;
   $('#new-code').hidden = true;
   hideDetail();
+  hideClassReport();
   prepareClassForm();
   fields.label.focus();
 });
@@ -295,10 +342,12 @@ $('#rotate').addEventListener('click', () => {
   if (confirm('Replace the class code? The previous code will stop working for new enrollments.')) void run(() => saveClass(true));
 });
 $('#refresh').addEventListener('click', () => run(() => loadSessions()));
+$('#class-report-load').addEventListener('click', () => run(loadClassReport));
 $('#more-sessions').addEventListener('click', () => run(() => loadSessions(false)));
 $('#more-events').addEventListener('click', () => run(loadEvents));
-$('#summary-export').addEventListener('click', () => run(() => exportClass(false)));
-$('#event-export').addEventListener('click', () => run(() => exportClass(true)));
+$('#summary-export').addEventListener('click', () => run(() => exportClass('summary')));
+$('#event-export').addEventListener('click', () => run(() => exportClass('events')));
+$('#card-export').addEventListener('click', () => run(() => exportClass('card-plays')));
 $('#delete-participant').addEventListener('click', () => {
   if (!selectedSession || !confirm('Permanently delete this participant, all their sessions, events, and completion credit?')) return;
   void run(async () => {

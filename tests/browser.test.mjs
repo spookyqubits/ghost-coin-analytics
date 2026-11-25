@@ -71,7 +71,8 @@ test('a browser plays two synthetic sessions, retries a lost response and sees t
         })));
       }
       if (path.endsWith('/gca_events')) {
-        return answer([...received.get(input.p_session).values()].map(e => ({ ...e, event_type: e.type })));
+        const events = [...received.get(input.p_session).values()].filter(e => e.seq > input.p_after);
+        return answer(events.slice(0, 200).map(e => ({ ...e, event_type: e.type })));
       }
       return route.fulfill({ status: 404, json: { message: 'Unexpected route ' + path }, headers });
     });
@@ -140,6 +141,33 @@ test('a browser plays two synthetic sessions, retries a lost response and sees t
     const contents = await readFile(await file.path(), 'utf8');
     assert.match(contents, /Synthetic Alice/);
     assert.match(contents, /Synthetic Bob/);
+
+    const cardDownload = teacher.waitForEvent('download');
+    await teacher.getByRole('button', { name: 'Export card plays' }).click();
+    const cardFile = await cardDownload;
+    assert.equal(cardFile.suggestedFilename(), 'ghost-coin-card-plays.csv');
+    const cards = await readFile(await cardFile.path(), 'utf8');
+    const [header, ...plays] = cards.trimEnd().split('\r\n');
+    assert.match(header, /"turn","player","actor","card","before_heads","before_tails","after_heads","after_tails"/);
+    assert.equal(plays.length, 6);
+    assert.equal(plays.filter(row => row.includes('"2","B","computer"')).length, 2);
+    assert.ok(plays.every(row => row.endsWith('"resolved","1","H"')));
+    assert.doesNotMatch(cards, /Synthetic Alice|Synthetic Bob/);
+
+    await teacher.getByRole('button', { name: 'View quantitative report' }).click();
+    const report = teacher.getByRole('region', { name: 'Quantitative class report' });
+    await report.waitFor();
+    assert.deepEqual(await report.locator('dd').allTextContents(), ['2', '4', '2', '2 / 2']);
+    assert.equal(await report.locator('.report-bar-row').count(), 4);
+    await report.getByText('Ghost', { exact: true }).waitFor();
+    await report.getByText('Human 4 · Computer 0', { exact: true }).waitFor();
+    await report.getByText('Automatic reveal (2)', { exact: true }).waitFor();
+    await report.getByText('Heads probability', { exact: true }).waitFor();
+    assert.equal(await report.locator('tbody tr').count(), new Set([...received.values()].map(events =>
+      [...events.values()].find(e => e.type === 'round_resolved').payload.cards.join(',')
+    )).size);
+    await teacher.locator('#class-select').selectOption('');
+    await report.waitFor({ state: 'hidden' });
     await staff.close();
   } finally {
     await browser.close();

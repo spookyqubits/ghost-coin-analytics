@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 import { Outbox } from '../analytics/outbox.mjs';
-import { csv } from '../analytics/reports.mjs';
+import { cardPlayColumns, cardPlayRows, csv } from '../analytics/reports.mjs';
 import { ActivityClock } from '../analytics/timing.mjs';
 
 test('Level 2 timing stops outside the level and separates hidden time and visible idle', () => {
@@ -51,6 +51,30 @@ test('the outbox retries original IDs in sequence and keeps events for their own
 
 test('CSV quotes user-entered names and neutralizes spreadsheet formula prefixes', () => {
   assert.equal(csv([['+Name', ' =1+2', 'A"B', 'Ordinary']]), `"'+Name","' =1+2","A""B","Ordinary"\r\n`);
+  assert.equal(csv([[-1, '-1']]), `"-1","'-1"\r\n`);
+});
+
+test('card plays retain unfinished attempts and use signed numeric states and round outcomes', () => {
+  const session = { session_id: 'session', participant_id: 'participant', student_name: 'A', partner_name: 'B' };
+  const events = ['resolved', 'abandoned', 'unresolved'].map((round, index) => ({
+    event_type: 'card_played', round_id: round, event_id: `event-${index}`, seq: index + 1,
+    elapsed_ms: index * 1000, client_at: '2026-11-25T00:00:00Z',
+    payload: { card: 'ghost', turn: 3, player: 'A', actor: 'human', before: { H: [], T: [1] }, after: { H: [1], T: [-1] } },
+  }));
+  events.push(
+    { event_type: 'round_resolved', round_id: 'resolved', payload: { heads_probability: 0.5, outcome: 'T' } },
+    { event_type: 'round_restart', round_id: 'abandoned', payload: { abandoned: true } },
+  );
+  const rows = cardPlayRows(session, events);
+  assert.ok(rows.every(row => row.length === cardPlayColumns.length));
+  assert.deepEqual(rows[0], [
+    'participant', 'session', true, 'resolved', 'event-0', 1, 0, '2026-11-25T00:00:00Z',
+    3, 'A', 'human', 'ghost', 0, 1, 1, -1, 'resolved', 0.5, 'T',
+  ]);
+  assert.deepEqual(rows.slice(1).map(row => row.slice(-3)), [
+    ['abandoned', undefined, undefined],
+    ['unresolved', undefined, undefined],
+  ]);
 });
 
 const pglite = process.env.GCA_PGLITE_DIR;
